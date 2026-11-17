@@ -438,7 +438,7 @@ _EXPORT = re.compile(r"export\s+default\s+function\s*(?:[A-Za-z_$][\w$]*\s*)?\("
 
 
 SILVER_AFTER = "m.metalness = 1.0; m.roughness = Math.max(0.25, m.roughness === undefined ? 0.25 : m.roughness);"  # the metal pass line the silver guide keys its roughness test on
-FINAL_STRETCH = 1.25  # width and height grow by up to this factor, capped at the plan's fill (1.0 = off)
+FINAL_STRETCH = 1.35  # width and height grow by up to this factor, capped at the plan's fill (1.0 = off)
 FINAL_DEPTH = 0.85  # the depth axis (toward the cameras) is scaled by this factor instead
 SATURATION = 1.15  # colour literals on colour lines: HSV saturation times this (1.0 = off), after the stretch
 _STRETCH_TAIL = "  return root;\n}"
