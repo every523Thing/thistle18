@@ -663,7 +663,6 @@ class StagePlan:
     astra_last: bool = False  # the planner lowers Sol xhigh rounds to Sol high first and touches Astra rounds only after them
     replan: bool = False  # the planner runs before every round from round 2 (see fit_rest): merges, some xhigh, then Astra give way
     merge_pick: bool = False  # after the draft pick: a critique of every draft, then one module merged from the best base and two others
-    merge_stack: bool = False  # the draft merge in two draws and a merge of the two (merged_stack)
     level_tilt: bool = False  # where the photo's outline calls for the 22-degree tilt, only flat objects get it; taller ones stay level
     tone: bool = False  # the finished module gets slightly more contrast and colour
     judged_tilt: bool = False  # the finished module is offered at other tilts toward the cameras; the pose selector's clear favourite is kept
@@ -807,69 +806,6 @@ class Pipeline:
             plan[i] = replace(plan[i], rewrites=(cheaper,))
         self.planned = [s.rewrites[0] if s.rewrites else None for s in plan]
         return plan
-
-    def merged_stack(self, pool: ThreadPoolExecutor, drafts: list[Candidate], picked: Candidate) -> Candidate:
-        """A Sol-high critique of every draft; two independent merges of the best base and the two drafts with the most
-        strengths, each shown their code, notes and renders; a Sol-high critique of the two merges and one merge of them.
-        Falls back to a single merge, then to the pick."""
-        if len(drafts) < 2:
-            return picked
-        image = lambda b: {"type": "input_image", "image_url": data_url(b), "detail": "high"}
-
-        def critique(by: dict[str, Candidate], request_id: int) -> tuple[dict[str, Any], str] | None:
-            content: list[dict[str, Any]] = [{"type": "input_text", "text": "TARGET:"}, self.target, *self.closeup]
-            for label, d in by.items():
-                content += [{"type": "input_text", "text": f"CANDIDATE {label} FRONT VIEWS:"}, image(d.front),
-                            {"type": "input_text", "text": f"CANDIDATE {label} GRID:"}, image(d.sides)]
-            content.append({"type": "input_text", "text": prompts.CRITIQUE_USER})
-            reply = self.run_stage(pool, [Call(request_id, SOL, prompts.CRITIQUE_SYSTEM, content, "high", 16384,
-                                               text=prompts.critique_schema(list(by)))])[0]
-            try:
-                c = json.loads(reply.output_text) if reply is not None else None
-                notes = {e["label"]: e for e in c["candidates"] if e.get("label") in by}
-                return notes, (c["base"] if c.get("base") in by else list(by)[0])
-            except (ValueError, TypeError, KeyError, AttributeError):
-                return None
-
-        def block(by, notes, label, role):
-            n = notes.get(label, {})
-            return (f"{role} MODULE (candidate {label})\nStrengths: " + "; ".join(n.get("strengths", [])) + "\nWeaknesses: "
-                    + "; ".join(n.get("weaknesses", [])) + f"\n```javascript\n{by[label].raw}\n```")
-
-        def shown(by, roles):
-            out: list[dict[str, Any]] = []
-            for label, role in roles:
-                out += [{"type": "input_text", "text": f"{role} MODULE (candidate {label}) as rendered, front views:"}, image(by[label].front),
-                        {"type": "input_text", "text": f"{role} MODULE (candidate {label}) as rendered, second-stage grid:"},
-                        image(by[label].sides)]
-            return out
-
-        labels = [chr(65 + i) for i in range(len(drafts))]
-        by = dict(zip(labels, drafts, strict=True))
-        first = critique(by, CRITIQUE_ID)
-        if first is None:
-            return picked
-        notes, base = first
-        others = sorted((l for l in labels if l != base), key=lambda l: -len(notes.get(l, {}).get("strengths", [])))[:2]
-        self.merge_base = by[base].name
-        text = prompts.MERGE_PICK + "\n\n" + block(by, notes, base, "BASE") + "".join("\n\n" + block(by, notes, l, "OTHER") for l in others)
-        content = [{"type": "input_text", "text": text}, self.target, *self.closeup, *shown(by, [(base, "BASE"), *((l, "OTHER") for l in others)])]
-        a, b = self.modules(pool, [Call(CRITIQUE_ID + 10, SOL, self.instructions, content, "high", GENERATE_MAX_OUTPUT),
-                                   Call(CRITIQUE_ID + 15, SOL, self.instructions, list(content), "high", GENERATE_MAX_OUTPUT)], ["dm", "dm2"])
-        if a is None or b is None:
-            return a or b or picked
-        pair = {"A": a, "B": b}
-        second = critique(pair, CRITIQUE_ID + 40)
-        if second is None:
-            return a
-        n2, b2 = second
-        o2 = "B" if b2 == "A" else "A"
-        text2 = prompts.MERGE_PICK + "\n\n" + block(pair, n2, b2, "BASE") + "\n\n" + block(pair, n2, o2, "OTHER")
-        call = Call(CRITIQUE_ID + 50, SOL, self.instructions,
-                    [{"type": "input_text", "text": text2}, self.target, *self.closeup, *shown(pair, [(b2, "BASE"), (o2, "OTHER")])],
-                    "high", GENERATE_MAX_OUTPUT)
-        merged = self.modules(pool, [call], ["dm"])[0]
-        return merged if merged is not None else pair[b2]
 
     def merged_pick(self, pool: ThreadPoolExecutor, drafts: list[Candidate], picked: Candidate) -> Candidate:
         """A critique of every draft against the target, then one module merged from the best base and the two other drafts
@@ -1433,7 +1369,7 @@ class Pipeline:
                 drafts = survivors
                 survivors = self.drafts_kept(pool, survivors, plan)
                 if plan.merge_pick:
-                    survivors = [(self.merged_stack if plan.merge_stack else self.merged_pick)(pool, drafts, survivors[0]), *survivors[1:]]
+                    survivors = [self.merged_pick(pool, drafts, survivors[0]), *survivors[1:]]
                 self.best_so_far = survivors[0].source
             searched = False
             steps = list(plan.steps)

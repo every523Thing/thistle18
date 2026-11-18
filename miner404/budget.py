@@ -34,35 +34,9 @@ RESERVE_OUTPUT = {("gpt-6-astra", 22000): 18500, ("gpt-6.1-sol", 44000): 36000, 
                   ("gpt-6.1-sol", 8192): 2048}
 
 
-# Real-time budget: calls are planned and admitted on the measured p90 output of each call type (Sol xhigh 44k cap
-# p90 23,907; Sol 32k cap p90 12,610; Sol edit 24k cap p90 14,608; Astra high p90 10,137; Sol select 8k cap p90 399;
-# judge 4k cap p90 236; label 2k cap p90 97) and realistic input, against the usable budget; a second, hard check keeps
-# actual spend plus the full output cap (and a conservative input estimate) of every call in flight within the
-# 5,000,000 limit, so no prompt can go over budget whatever its outputs.
-EXPECT_OUTPUT = {("gpt-6-astra", 22000): 10200, ("gpt-6.1-sol", 44000): 24000, ("gpt-6.1-sol", 32768): 12700,
-                 ("gpt-6.1-sol", 24000): 14700, ("gpt-6.1-sol", 20000): 14000, ("gpt-6.1-sol", 16384): 2500,
-                 ("gpt-6.1-sol", 8192): 400, ("gpt-6.1-sol", 4096): 240, ("gpt-6.1-sol", 2000): 100,
-                 ("gpt-6.1-sol", 1024): 150, ("gpt-6-luna", 2048): 350}
-WORST_OUTPUT = {**RESERVE_OUTPUT, ("gpt-6.1-sol", 24000): 19500}
-
-
-class Estimate(float):
-    """An expected cost (the float) that also carries the call's worst case (.worst)."""
-    worst: float
-
-
 def worst_case(model: str, text_chars: int, images: int, max_output_tokens: int) -> float:
     input_tokens = int(text_chars / CHARS_PER_TOKEN) + images * TOKENS_PER_IMAGE
-    worst = call_credits(model, input_tokens, max_output_tokens)  # the hard bound: output can never pass the call's cap
-    expected_input = int(text_chars / 3.5) + images * 1050  # measured: a judge call with 3 images reads about 3,900 tokens
-    expected = call_credits(model, expected_input, EXPECT_OUTPUT.get((model, max_output_tokens), min(max_output_tokens, WORST_OUTPUT.get((model, max_output_tokens), max_output_tokens))))
-    out = Estimate(min(expected, worst))
-    out.worst = worst
-    return out
-
-
-def _worst(e: float) -> float:
-    return getattr(e, "worst", e)
+    return call_credits(model, input_tokens, RESERVE_OUTPUT.get((model, max_output_tokens), max_output_tokens))
 
 
 class Budget:
@@ -74,24 +48,20 @@ class Budget:
         self.credits = 0.0
         self._reserved_calls = 0
         self._reserved_credits = 0.0
-        self._reserved_worst = 0.0
 
     def allows(self, estimates: list[float], keep_calls: int = 0, keep_credits: float = 0.0) -> bool:
         with self._lock:
             calls = self.calls + self._reserved_calls + len(estimates) + keep_calls
             credits = self.credits + self._reserved_credits + sum(estimates) + keep_credits
-            hard = self.credits + self._reserved_worst + sum(_worst(e) for e in estimates)
-            return calls <= CALL_LIMIT and credits <= CREDIT_LIMIT * (1 - SAFETY) and hard <= CREDIT_LIMIT
+            return calls <= CALL_LIMIT and credits <= CREDIT_LIMIT * (1 - SAFETY)
 
     def reserve(self, estimate: float) -> bool:
         with self._lock:
             if (self.calls + self._reserved_calls + 1 > CALL_LIMIT
-                    or self.credits + self._reserved_credits + estimate > CREDIT_LIMIT * (1 - SAFETY)
-                    or self.credits + self._reserved_worst + _worst(estimate) > CREDIT_LIMIT):
+                    or self.credits + self._reserved_credits + estimate > CREDIT_LIMIT * (1 - SAFETY)):
                 return False
             self._reserved_calls += 1
             self._reserved_credits += estimate
-            self._reserved_worst += _worst(estimate)
             return True
 
     def settle(self, estimate: float, model: str, usage: object | None) -> None:
@@ -103,6 +73,5 @@ class Budget:
         with self._lock:
             self._reserved_calls -= 1
             self._reserved_credits -= estimate
-            self._reserved_worst -= _worst(estimate)
             self.calls += 1
             self.credits += charged
