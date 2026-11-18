@@ -274,8 +274,7 @@ export default function generate(THREE) {
 }
 """
 # Flat objects otherwise show the front cameras a thin edge. Applied before the fit, so the fit includes the tilt.
-_TILT = """  const flat = new THREE.Box3().setFromObject(root, true).getSize(new THREE.Vector3());
-  if (flat.y < 0.5 * Math.max(flat.x, flat.z)) root.rotation.x = 15 * Math.PI / 180;
+_TILT = """  // no tilt: output rules of 2026-11-18 (Y-up, +Z forward, no rotational offsets)
 """
 _FIT = "  const box = new THREE.Box3().setFromObject(root);\n"
 
@@ -416,8 +415,6 @@ function __grade404(THREE, root, gamma, saturation) {
 """
 GRADE_CALL = "__grade404(THREE, root, 1, 1);"
 _OUTLINE_TILT = """  __grade404(THREE, root, 1, 1);
-  const flat = new THREE.Box3().setFromObject(root, true).getSize(new THREE.Vector3());
-  if (flat.y < 0.5 * Math.max(flat.x, flat.z)) root.rotation.x = 15 * Math.PI / 180;
   __bake404(THREE, root);
 """
 
@@ -438,7 +435,7 @@ _EXPORT = re.compile(r"export\s+default\s+function\s*(?:[A-Za-z_$][\w$]*\s*)?\("
 
 
 SILVER_AFTER = "m.metalness = 1.0; m.roughness = Math.max(0.25, m.roughness === undefined ? 0.25 : m.roughness);"  # the metal pass line the silver guide keys its roughness test on
-FINAL_STRETCH = 1.35  # width and height grow by up to this factor, capped at the plan's fill (1.0 = off)
+FINAL_STRETCH = 1.0  # off: output rules of 2026-11-18 (mandatory uniform scaling); width and height grow by up to this factor, capped at the plan's fill (1.0 = off)
 FINAL_DEPTH = 0.85  # the depth axis (toward the cameras) is scaled by this factor instead
 SATURATION = 1.15  # colour literals on colour lines: HSV saturation times this (1.0 = off), after the stretch
 _STRETCH_TAIL = "  return root;\n}"
@@ -1397,7 +1394,7 @@ class Pipeline:
                 winner = self.checked(pool, winner)
                 self.best_so_far = winner.source
             final = self.posed(pool, winner) if plan.pose and not plan.measured else winner
-            source = self.stronger_metal(self.photo_tilted(self.fitted_last(winner, plan)) if plan.outline_fit_last and final is winner else final.source)
+            source = self.stronger_metal(self.fitted_last(winner, plan) if plan.outline_fit_last and final is winner else final.source)
             if plan.judged_tilt:
                 self.best_so_far = source
                 source = self.judged_tilt(pool, source)

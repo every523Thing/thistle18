@@ -72,10 +72,9 @@ upright, lying or leaning pose, the same left-right direction. Do not turn it in
 lies, leans or runs diagonally in the photo keeps that lean or diagonal in the X-Y plane.
 - A long object shown from the side (car, boat, train, shoe, knife, animal in profile) runs along X, not toward the
   camera.
-- A flat object shown face-on (plate, tray, clock, sign, coin, book cover) turns that face toward +Z, so the cameras
-  see the face and not a thin edge.
-- An object whose height is under half its width or depth is tilted 15 degrees toward the cameras automatically. Do
-  not add or correct that tilt."""
+- Keep each object in its natural upright orientation, Y up and its front toward +Z: a plate, tray or coin lying in the
+  photo lies flat; a clock, sign or framed picture standing in the photo stands facing +Z.
+- Do not tilt, lean or turn the object toward the cameras to show more of it; no rotation is added afterwards."""
 
 _GUIDANCE_CHAIN = """## How to build it
 
