@@ -14,7 +14,7 @@ from PIL import Image
 TEMPLATE = """export default function generate(THREE) {
   const material = new THREE.MeshStandardMaterial({ color: 0x%s, roughness: 0.6, metalness: 0.0 });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 48, 32), material);
-  mesh.scale.set(0.95, 0.8, 0.95);
+  mesh.scale.setScalar(0.95);
   const root = new THREE.Group();
   root.add(mesh);
   return root;

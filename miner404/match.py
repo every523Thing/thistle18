@@ -23,12 +23,9 @@ OVERLAY_SIDE = 256
 WEIGHTS = {"ncc": 2.322, "pix_err": -0.0567, "aspect_err": -3.1964, "hist_sim": 2.3108, "contrast": 0.084, "fill": 9.7765}
 LUMA = np.array([299, 587, 114], dtype=np.int64)  # thousandths
 BINS = 6
-# Pose search: small renders, one axis at a time. Quarter turns replace orient.best_yaw; a half turn is never offered,
-# because front and back silhouettes look alike and the judge almost never prefers a back view.
+# Small renders of the judge's front views, for the colour-grade search.
 SEARCH_RENDER = RenderOptions(thetas=FRONT_THETAS, phis=FRONT_PHIS, img_size=256, gap=0, bg_color="ffffff",
                               lighting="neutral")
-SEARCH_AXES = {"yaw": (-90, -30, -15, 15, 30, 90), "pitch": (-15, 15, 30), "roll": (-15, 15)}
-SEARCH_MARGIN = 0.15  # score an axis must gain to move at all: most modules are already posed about right
 GRADE_MARGIN = 0.05
 
 
@@ -147,31 +144,6 @@ def feedback(grid: bytes, photo: Appearance) -> tuple[str, bytes]:
     buffer = io.BytesIO()
     overlay.save(buffer, "PNG")
     return "\n".join(lines), buffer.getvalue()
-
-
-def search_pose(source: str, photo: Appearance, renderer: Renderer,
-                turned: Callable[[str, int, int, int], str]) -> tuple[tuple[int, int, int], float, float]:
-    """The turn (yaw, pitch, roll in degrees) that best matches the photo, one axis at a time.
-
-    Returns the turn, its score and the score as built. A view the renderer rejects simply scores nothing.
-    """
-
-    def scored(yaw: int, pitch: int, roll: int) -> float:
-        try:
-            return grid_score(renderer.render(turned(source, yaw, pitch, roll), SEARCH_RENDER), photo)
-        except RenderRejected:  # a turn that fails to render is simply not chosen
-            return float("-inf")
-
-    start = scored(0, 0, 0)
-    best, pose = start, {"yaw": 0, "pitch": 0, "roll": 0}
-    for axis, values in SEARCH_AXES.items():
-        current = best
-        for value in values:
-            trial = {**pose, axis: value}
-            score = scored(trial["yaw"], trial["pitch"], trial["roll"])
-            if score > best and score >= current + SEARCH_MARGIN:
-                best, pose = score, trial
-    return (pose["yaw"], pose["pitch"], pose["roll"]), best, start
 
 
 GRADE_GAMMAS = (0.85, 1.15, 1.3, 1.5)  # above 1 deepens tones and raises contrast; the photo decides how far

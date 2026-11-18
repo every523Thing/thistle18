@@ -7,9 +7,7 @@ Per prompt (the plan is fixed per round; see StagePlan and versions.py):
      a child by a clear margin to stay.
   3. Selection: Sol scores candidates twice, in opposite presentation orders, on the judge's four front views and the
      judge's second-stage grid.
-  4. Pose: a quarter turn (photo silhouette) and, for flat objects, standing up are offered to the selector, and win
-     only by a clear margin.
-Every module is wrapped (99% unit-cube fit, small tilt for flat objects, draw-call merge, texture shrink) and validated
+Every module is wrapped (uniform unit-cube fit, centred, draw-call merge, texture shrink) and validated
 with the renderer; a rejected one gets one repair call.
 The prompt never exceeds the call or credit limits: every stage reserves its worst case before dispatching.
 A failed model call stops the prompt (see CallFailed).
@@ -42,7 +40,7 @@ from openai.types.responses import Response, ResponseInputParam
 from openai.types.responses.response_create_params import ResponseCreateParamsBase
 from witness_client import ExchangePending, RenderOptions, RenderRejected, RenderUnavailable, WitnessError
 
-from . import match, orient, patch, prompts, tilt
+from . import match, patch, prompts
 from .silver_guide import silver_guide
 from .texfix import texfix
 from .powfix import fix_unary_pow
@@ -62,8 +60,6 @@ ASTRA_MAX_OUTPUT = 22000  # five times Sol per token, and the budget guard reser
 EFFORT_MAX_OUTPUT = {"xhigh": 44000, "max": 64000}  # reasoning counts against the cap
 GRID_WEIGHT = 0.25  # the grid only decides duels the front views leave close
 PARENT_MARGIN = 0.25  # mean penalty points a parent must lead by
-POSE_PITCHES = (45, 90)  # for a photo from above, and for a face shown head-on
-POSE_MARGIN = 0.5  # mean penalty points a new pose must gain; the selector is noisy and most poses are already right
 JOIN_ATTEMPTS = 6  # a repeated request joins a capture that outlasted the client's wait, without paying again
 RENDER_WAITS = (5, 10, 20, 40, 60, 60)  # the Pod has one render slot and a two-minute queue limit
 RENDER_TIMEOUT_RETRIES = 2  # the renderer answers HTTP 500 when a module misses its 30-second deadline
@@ -74,18 +70,12 @@ REWRITE_BASE = 100  # step i, survivor s, rewrite m: 100 * (i + 1) + 10 * s + m
 REPAIR_OFFSET = 5000
 SELECT_ID = 9000  # plus 10 * (step + 1); the mirrored call takes the next id
 FINAL_SELECT_ID = 9800
-POSE_ID = 9900
 CHECK_ID = 9950  # the inspector; +10 its rewrite; +20 and +21 the selector's choice
 REVIEW_ID = 9600  # the reviewer before a round that feeds fixes: + 10 * (round index + 1) + lineage
 CRITIQUE_ID = 9400  # the critique of the drafts; + 10 the module merged from them
-CALL_RESERVE = 3  # calls the round planner leaves for the pose choice and one repair
+CALL_RESERVE = 3  # calls the round planner leaves for one repair
 JUDGE_MAX_OUTPUT = 4096
 JUDGE_DRAW = 0.7  # the judge's own first-stage draw threshold, in mean penalty points
-TILT_SELECT_ID = 9960  # the judged final tilt; the mirrored call takes the next id
-TILT_CHOICES = (0, 20, 40)  # degrees toward the cameras, offered for the finished module
-TILT_MARGIN = 0.25  # mean penalty points a new tilt must gain over the module as finished
-_TILT_LINES = re.compile(r"if \(flat\.y < 0\.5 \* Math\.max\(flat\.x, flat\.z\)\) root\.rotation\.x = 15 \* Math\.PI / 180;"
-                         r"|root\.rotation\.x = \d+ \* Math\.PI / 180;")
 CHECK_SEVERITY = 5  # what the inspector must report before the finished module is rewritten
 POST_PICK_STEPS = 3  # rewrites of the final pick (steps 7-9: rewrite 700/800/900, selection 9070/9080/9090)
 POST_PICK_REWRITE = (SOL, "xhigh")  # the rewrite of the plan's last step
@@ -95,7 +85,6 @@ BRIEF_MAX_OUTPUT = 4096
 MEASURED_ASTRA_MAX_OUTPUT = 18000  # a lower cap reserves less, so late rewrites are not refused
 MATCH_WEIGHT = 0.5  # penalty points per unit of match score
 FIT_VIEW_LIMIT = 12.0  # the fit also corrects a wrong plain size, which changes the crops; a broken module differs far more
-POSE_SEARCH_GAIN = 0.5  # match score a turn must gain to be offered to the selector at all
 
 # The judge's Stage 1 front views and Stage 4 side views (shared/subnet_common/render.py), white, neutral light.
 FRONT = RenderOptions(thetas=(30, 330, 0, 0), phis=(0, 0, 15, -30), img_size=384, bg_color="ffffff",
@@ -105,7 +94,6 @@ SIDES = RenderOptions(thetas=(90, 180, 270, 0), phis=(0, 0, 0, -90), img_size=25
 # The judge's own pixels. A module that renders here within the deadline should also pass the final save's renders.
 FRONT_JUDGE = RenderOptions(thetas=(30, 330, 0, 0), phis=(0, 0, 15, -30), img_size=1024, gap=0, bg_color="ffffff",
                             lighting="neutral")
-LEVEL_VIEW = RenderOptions(thetas=(0,), phis=(0,), img_size=384, gap=0, bg_color="ffffff", lighting="neutral")
 GRID_VIEW = RenderOptions(lighting="neutral")  # pixel-identical to the official grid.png of the judge's stage 2
 
 # Calls the model's function directly: the validator rejects passing THREE through an aliased callee.
@@ -273,9 +261,8 @@ export default function generate(THREE) {
   return root;
 }
 """
-# Flat objects otherwise show the front cameras a thin edge. Applied before the fit, so the fit includes the tilt.
-_TILT = """  // no tilt: output rules of 2026-11-18 (Y-up, +Z forward, no rotational offsets)
-"""
+_PRE_FIT = """  // uniform fit, centred
+"""  # a marker line: the outline and glow steps are placed before the fit here
 _FIT = "  const box = new THREE.Box3().setFromObject(root);\n"
 
 
@@ -414,19 +401,19 @@ function __grade404(THREE, root, gamma, saturation) {
 }
 """
 GRADE_CALL = "__grade404(THREE, root, 1, 1);"
-_OUTLINE_TILT = """  __grade404(THREE, root, 1, 1);
+_OUTLINE_PRE_FIT = """  __grade404(THREE, root, 1, 1);
   __bake404(THREE, root);
 """
 
 
 def chain_wrapper(fill: float, glow: float = 0.0, outline_fit: bool = False) -> str:
-    """The fit and tilt wrapper. `glow` makes part of each color independent of the light, so it survives the grid's dim
+    """The fit wrapper. `glow` makes part of each color independent of the light, so it survives the grid's dim
     light, and darkens the base color to keep the bright views about the same. `outline_fit` fits the object's real outline."""
-    wrapper = WRAPPER.replace(_FIT, _TILT + _FIT, 1).replace("0.95 / extent", f"{fill} / extent", 1)
+    wrapper = WRAPPER.replace(_FIT, _PRE_FIT + _FIT, 1).replace("0.95 / extent", f"{fill} / extent", 1)
     if outline_fit:
-        wrapper = wrapper.replace(_TILT, _OUTLINE_TILT, 1).replace(_EXPORT_LINE, _OUTLINE_FUNCTION + _GRADE_FUNCTION + "\n" + _EXPORT_LINE, 1)
+        wrapper = wrapper.replace(_PRE_FIT, _OUTLINE_PRE_FIT, 1).replace(_EXPORT_LINE, _OUTLINE_FUNCTION + _GRADE_FUNCTION + "\n" + _EXPORT_LINE, 1)
     if glow:
-        wrapper = wrapper.replace(_TILT, f"  __lift404(root, {glow});\n" + _TILT, 1)
+        wrapper = wrapper.replace(_PRE_FIT, f"  __lift404(root, {glow});\n" + _PRE_FIT, 1)
         wrapper = wrapper.replace(_EXPORT_LINE, _GLOW_FUNCTION + "\n" + _EXPORT_LINE, 1)
     return wrapper
 
@@ -435,35 +422,7 @@ _EXPORT = re.compile(r"export\s+default\s+function\s*(?:[A-Za-z_$][\w$]*\s*)?\("
 
 
 SILVER_AFTER = "m.metalness = 1.0; m.roughness = Math.max(0.25, m.roughness === undefined ? 0.25 : m.roughness);"  # the metal pass line the silver guide keys its roughness test on
-FINAL_STRETCH = 1.0  # off: output rules of 2026-11-18 (mandatory uniform scaling); width and height grow by up to this factor, capped at the plan's fill (1.0 = off)
-FINAL_DEPTH = 0.85  # the depth axis (toward the cameras) is scaled by this factor instead
-SATURATION = 1.15  # colour literals on colour lines: HSV saturation times this (1.0 = off), after the stretch
-_STRETCH_TAIL = "  return root;\n}"
-_STRETCH = """  const __frame404 = new THREE.Group();
-  __frame404.add(root);
-  const __box404 = new THREE.Box3().setFromObject(__frame404);
-  const __size404 = __box404.getSize(new THREE.Vector3());
-  const __mid404 = __box404.getCenter(new THREE.Vector3());
-  // each axis grows toward the fill, by at most the stretch factor; a flat or broken axis keeps its size
-  const __gain404 = [__size404.x, __size404.y, __size404.z].map((extent) =>
-    (Number.isFinite(extent) && extent > 1e-6) ? Math.min(%r, %r / extent) : 1);
-  __gain404[2] = %r;  // depth: a fixed factor, so the object reads larger in front without growing toward the cameras
-  __frame404.scale.fromArray(__gain404);
-  __frame404.position.set(-__mid404.x * __gain404[0], -__mid404.y * __gain404[1], -__mid404.z * __gain404[2]);
-  return __frame404;
-}"""
-
-
-def final_stretch(source: str | None, cap: float) -> str | None:
-    """The module with its shorter box axes stretched (FINAL_STRETCH, capped at `cap`), or as it is when FINAL_STRETCH <= 1.0,
-    when there is no module, or when the generate() wrapper's final return is not where expected."""
-    if FINAL_STRETCH <= 1.0 or not source:
-        return source
-    at = source.rfind("export default function generate(THREE)")
-    end = source.rfind(_STRETCH_TAIL)
-    if at < 0 or end < at:
-        return source
-    return source[:end] + _STRETCH % (FINAL_STRETCH, cap, FINAL_DEPTH) + source[end + len(_STRETCH_TAIL):]
+SATURATION = 1.15  # colour literals on colour lines: HSV saturation times this (1.0 = off)
 
 
 _HEX = re.compile(r"(0x|#)([0-9a-fA-F]{6})\b")
@@ -607,7 +566,6 @@ class Plan:
     drafts: tuple[tuple[str, str, str], ...]  # (model, reasoning effort, "base" | "handbook" instructions)
     draft_max_output: int = 16384
     group_size: int = 4  # candidates per judged group in the selection tournament
-    orient: bool = True
     refine_rounds: int = 1
     refine_focuses: tuple[str, ...] = ("blind", "shape")
     refine_effort: str = "medium"
@@ -646,10 +604,9 @@ class StagePlan:
     steps: tuple[Step, ...]
     draft_keep: int = 0  # survivors of the draft selection; 0 = every valid draft goes on
     draft_each_start: bool = False  # the survivors come from different starts while there are any
-    pose: bool = True
     fill: float = 0.99
     glow: float = 0.0  # see chain_wrapper
-    # The photo brief, pixel measurements in rewrites and selection, and the pose search (see match.py).
+    # The photo brief and pixel measurements in rewrites and selection (see match.py).
     measured: bool = False
     # Fit the object's real outline, so rotated parts do not shrink it.
     outline_fit: bool = False
@@ -660,9 +617,7 @@ class StagePlan:
     astra_last: bool = False  # the planner lowers Sol xhigh rounds to Sol high first and touches Astra rounds only after them
     replan: bool = False  # the planner runs before every round from round 2 (see fit_rest): merges, some xhigh, then Astra give way
     merge_pick: bool = False  # after the draft pick: a critique of every draft, then one module merged from the best base and two others
-    level_tilt: bool = False  # where the photo's outline calls for the 22-degree tilt, only flat objects get it; taller ones stay level
     tone: bool = False  # the finished module gets slightly more contrast and colour
-    judged_tilt: bool = False  # the finished module is offered at other tilts toward the cameras; the pose selector's clear favourite is kept
     outline_fit_last: bool = False
     post_pick_effort: str = "xhigh"  # effort of the rewrites of the final pick
     post_pick_steps: int = POST_PICK_STEPS  # rewrites of the final pick; 0 ends the chain at the pick
@@ -730,7 +685,6 @@ class Pipeline:
         self.brief = ""
         self.patch_log: list[dict[str, Any]] = []  # one entry per patch-edit reply
         self.patch_ratios: list[float] = []  # per patch-edit reply: its visible tokens over the module's (1 for a whole module)
-        self.level_tilt = False
         self.keep_shots = False  # candidates keep their uncropped side views for judge_pick
         self.end_reserve = 0.0  # credits the round planner leaves for the selection after the last round
         self.merge_base = ""  # the draft the merged draft was built on
@@ -1056,19 +1010,7 @@ class Pipeline:
             return source, rejection.detail_json
         return Candidate(name, source, front, self.renderer.render(source, SIDES))
 
-    def oriented(self, candidate: Candidate) -> Candidate:
-        """Turn the asset so the side matching the photo's silhouette faces the judge's front cameras."""
-        try:
-            yaw = orient.best_yaw(self.image, candidate.source, self.renderer)
-        except RenderRejected:  # a turned copy should always validate; if not, keep the candidate as built
-            return candidate
-        if yaw == 0:
-            return candidate
-        outcome = self.render(candidate.name, orient.rotated(candidate.source, yaw))
-        return outcome if isinstance(outcome, Candidate) else candidate
-
-    def build(self, pool: ThreadPoolExecutor, named: list[tuple[str, Response | None]], repair_base: int,
-              orient_candidates: bool = False) -> list[Candidate]:
+    def build(self, pool: ThreadPoolExecutor, named: list[tuple[str, Response | None]], repair_base: int) -> list[Candidate]:
         """Render replies; rejected modules get one repair, then those are rendered too."""
         candidates: list[Candidate] = []
         rejected: list[tuple[str, str, str]] = []
@@ -1079,7 +1021,7 @@ class Pipeline:
             source = fix_unary_pow(source)
             outcome = self.render(name, normalize(source))
             if isinstance(outcome, Candidate):
-                candidates.append(self.oriented(outcome) if orient_candidates else outcome)
+                candidates.append(outcome)
             else:
                 rejected.append((name, *outcome))
         repairs = [
@@ -1093,7 +1035,7 @@ class Pipeline:
                 source = fix_unary_pow(source)
                 outcome = self.render(name + "r", normalize(source))
                 if isinstance(outcome, Candidate):
-                    candidates.append(self.oriented(outcome) if orient_candidates else outcome)
+                    candidates.append(outcome)
         return candidates
 
     def render_module(self, name: str, source: str, raw: str = "") -> Candidate | tuple[str, str]:
@@ -1295,7 +1237,7 @@ class Pipeline:
             ]
             replies = self.run_stage(pool, draft_calls)
             candidates = self.build(pool, [(f"c{1 + i}", reply) for i, reply in enumerate(replies)],
-                                    repair_base=500, orient_candidates=plan.orient)
+                                    repair_base=500)
             if not candidates:
                 return fallback_module(self.image)
             self.best_so_far = candidates[0].source
@@ -1327,8 +1269,7 @@ class Pipeline:
                     break
                 replies = self.run_stage(pool, calls)
                 children = self.build(pool, [(f"r{round_index}{c.request_id % 100}", r) for c, r in
-                                             zip(calls, replies, strict=True)], repair_base=base + 50,
-                                      orient_candidates=plan.orient)
+                                             zip(calls, replies, strict=True)], repair_base=base + 50)
                 if not children:
                     continue
                 judgements = self.judge(pool, [incumbent, *children], base + 80)
@@ -1340,9 +1281,8 @@ class Pipeline:
 
     def run_stages(self, plan: StagePlan) -> str:
         self.wrapper = chain_wrapper(plan.fill, plan.glow, plan.outline_fit or plan.measured)
-        self.level_tilt = plan.level_tilt
         self.keep_shots = any(step.judge_pick for step in plan.steps)
-        self.end_reserve = 2 * worst_case(SOL, 4000, 11, SELECT_MAX_OUTPUT) if plan.judged_tilt else 0.0
+        self.end_reserve = 0.0
         closeup = object_closeup(self.image)
         if closeup is not None:
             self.closeup = [{"type": "input_image", "image_url": data_url(closeup), "detail": "high"}]
@@ -1380,8 +1320,6 @@ class Pipeline:
                     self.plan_rounds = plan.plan_rounds
                     steps = self.fit_plan(steps, survivors[0])
                 self.best_so_far = survivors[0].source
-                if plan.measured and len(survivors) == 1 and not searched:  # once only: the Pod has one render slot
-                    survivors[0], searched = self.posed_by_search(pool, survivors[0]), True
             winner = self.select(pool, survivors, set(), 1, FINAL_SELECT_ID)[0]
             self.best_so_far = winner.source
             for index in range(len(plan.steps), len(plan.steps) + plan.post_pick_steps):
@@ -1393,14 +1331,10 @@ class Pipeline:
             if plan.check:
                 winner = self.checked(pool, winner)
                 self.best_so_far = winner.source
-            final = self.posed(pool, winner) if plan.pose and not plan.measured else winner
-            source = self.stronger_metal(self.fitted_last(winner, plan) if plan.outline_fit_last and final is winner else final.source)
-            if plan.judged_tilt:
-                self.best_so_far = source
-                source = self.judged_tilt(pool, source)
+            source = self.stronger_metal(self.fitted_last(winner, plan) if plan.outline_fit_last else winner.source)
             if plan.tone:
                 source = self.toned(source)
-            return self.texfixed(self.silvered(saturated(final_stretch(source, plan.fill))))
+            return self.texfixed(self.silvered(saturated(source)))
 
     def texfixed(self, source: str | None) -> str | None:
         """The finished module with smooth sampling on unfiltered data textures (texfix.py); as it is when nothing changes
@@ -1430,49 +1364,6 @@ class Pipeline:
             return source
         return candidate
 
-    def photo_tilted(self, source: str) -> str:
-        """The module at the tilt that matches the photo best, as it is when the photo does not settle it or the renderer refuses."""
-        try:
-            angle = tilt.best_tilt(self.image, source, lambda s: self.renderer.render(s, LEVEL_VIEW))
-            if angle is None:
-                return source
-            turned = tilt.tilted_if_flat(source, angle) if self.level_tilt else tilt.tilted(source, angle)
-            self.renderer.render(turned, FRONT_JUDGE)
-        except RenderRejected:
-            return source
-        return turned
-
-    def judged_tilt(self, pool: ThreadPoolExecutor, source: str) -> str:
-        """The finished module at the tilt the pose selector prefers: the module as finished, and turned 0, 20 and 40
-        degrees toward the cameras, scored together in both orders. A new tilt must lead by TILT_MARGIN."""
-        lines = _TILT_LINES.findall(source)
-        if len(lines) != 1:
-            return source
-        variants = {"finished": source}
-        for angle in TILT_CHOICES:
-            variants[f"tilt{angle}"] = source.replace(lines[0], f"root.rotation.x = {angle} * Math.PI / 180;", 1)
-        candidates: list[Candidate] = []
-        seen: set[str] = set()
-        for name, text in variants.items():
-            outcome = self.render_module(name, text)
-            if not isinstance(outcome, Candidate):
-                continue
-            key = hashlib.sha256(outcome.front + outcome.sides).hexdigest()
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(outcome)
-        if len(candidates) < 2 or candidates[0].name != "finished":
-            return source
-        judgements = self.scores(pool, candidates, TILT_SELECT_ID, prompts.SELECT_POSE)
-        current = judgements.get("finished")
-        if current is None:
-            return source
-        best = min((c for c in candidates if c.name in judgements), key=lambda c: (judgements[c.name].score, c.name != "finished"))
-        if best.name != "finished" and judgements[best.name].score + TILT_MARGIN <= current.score:
-            return best.source
-        return source
-
     def toned(self, source: str) -> str:
         """Slightly more contrast and colour on the finished module; as it is when the renderer refuses."""
         turned = tone(source)
@@ -1501,8 +1392,7 @@ class Pipeline:
         return turned
 
     def fitted_last(self, winner: Candidate, plan: StagePlan) -> str:
-        """The finished module with the outline fit, or as it is if the fit is rejected. A module the pose stage turned keeps
-        its plain fit, because the turn is written around the wrapped source."""
+        """The finished module with the outline fit, or as it is if the fit is rejected."""
         if not winner.raw:
             return winner.source
         source = normalize(winner.raw, chain_wrapper(plan.fill, plan.glow, True))
@@ -1524,25 +1414,6 @@ class Pipeline:
                 pose=brief["pose"], true_colors="; ".join(brief["true_colors"]))
         except (TypeError, KeyError, ValueError):
             return ""
-
-    def posed_by_search(self, pool: ThreadPoolExecutor, incumbent: Candidate) -> Candidate:
-        """Offer the best turn to the selector, and keep it when the two scores together prefer it. The turn goes into the
-        module's own code, so the rewrites that follow can see it and keep it."""
-        if self.photo is None:
-            return incumbent
-        pose, best, start = match.search_pose(incumbent.source, self.photo, self.renderer, orient.turned)
-        if best - start < POSE_SEARCH_GAIN or not any(pose):
-            return incumbent
-        raw = orient.turned_module(incumbent.raw, *pose)
-        outcome = self.render_module(incumbent.name + "t", normalize(raw, self.wrapper), raw)
-        if not isinstance(outcome, Candidate):
-            return incumbent
-        judgements = self.scores(pool, [incumbent, outcome], POSE_ID, prompts.SELECT_POSE)
-        current, offered = judgements.get(incumbent.name), judgements.get(outcome.name)
-        if current is None or offered is None:
-            return incumbent
-        now = current.score - MATCH_WEIGHT * incumbent.match
-        return outcome if offered.score - MATCH_WEIGHT * outcome.match + PARENT_MARGIN <= now else incumbent
 
     def drafts_kept(self, pool: ThreadPoolExecutor, drafts: list[Candidate], plan: StagePlan) -> list[Candidate]:
         ordered = self.select(pool, drafts, set(), len(drafts) - 1 if plan.draft_each_start and len(drafts) > plan.draft_keep else plan.draft_keep, SELECT_ID)
@@ -1643,31 +1514,6 @@ class Pipeline:
         mine, parent = judgements.get(child.name), judgements.get(winner.name)
         return child if mine is not None and parent is not None and mine.score <= parent.score + PARENT_MARGIN else winner
 
-    def posed(self, pool: ThreadPoolExecutor, incumbent: Candidate) -> Candidate:
-        """Offer other poses to the selector: the photo-matching quarter turn, and standing a flat object up."""
-        try:
-            sources = []
-            yaw = orient.best_yaw(self.image, incumbent.source, self.renderer)
-            if yaw:
-                sources.append(orient.rotated(incumbent.source, yaw))
-            if orient.is_flat(incumbent.source, self.renderer):
-                sources += [orient.stood_up(incumbent.source, pitch) for pitch in POSE_PITCHES]
-        except RenderRejected:  # a probe of a validated module should not fail; if it does, keep the module as built
-            return incumbent
-        variants = []
-        for index, source in enumerate(sources):
-            outcome = self.render_module(f"p{index}", source)
-            if isinstance(outcome, Candidate):
-                variants.append(outcome)
-        if not variants:
-            return incumbent
-        judgements = self.scores(pool, [incumbent, *variants], POSE_ID, prompts.SELECT_POSE)
-        best = self.best(variants, judgements)
-        current, offered = judgements.get(incumbent.name), judgements.get(best.name)
-        if current is not None and offered is not None and offered.score + POSE_MARGIN <= current.score:
-            return best
-        return incumbent
-
     def affordable(self, calls: list[Call]) -> list[Call]:
         """Drop refinements from the end until the round, its repairs and its two judge calls fit the budget."""
         judge_estimate = worst_case(SOL, 4000, 9, SELECT_MAX_OUTPUT)
@@ -1704,7 +1550,7 @@ def run(image: bytes, seed: int, calls: ModelCalls, renderer: Renderer, plan: Pl
         raise  # the runner tries the prompt again, reusing saved calls
     except Exception:
         # A bug in a later stage must not cost the prompt; the outcome is deterministic, so replay matches.
-        return final_stretch(pipeline.best_so_far, getattr(plan, "fill", 0.99)) or fallback_module(image)
+        return pipeline.best_so_far or fallback_module(image)
 
 
 # Mean reasoning tokens and input tokens besides the module, per rewrite type.
