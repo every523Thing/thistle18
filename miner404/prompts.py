@@ -548,3 +548,21 @@ def judge_schema() -> dict:
     return {"format": {"type": "json_schema", "name": "penalties", "strict": True, "schema": {
         "type": "object", "additionalProperties": False, "required": ["penalty_1", "penalty_2", "issues"],
         "properties": {"penalty_1": {"type": "integer"}, "penalty_2": {"type": "integer"}, "issues": {"type": "string"}}}}}
+
+
+# The text read-out before the drafts.
+TR_SYSTEM = "You read the visible text on a product photo exactly. Reply with JSON only."
+TR_USER = ("List every piece of visible text, number, logo lettering, label or marking on the main object in this photo. Copy each "
+           "exactly as printed, letter by letter, even if the spelling looks unusual or the words are not real; do not correct, "
+           "complete or translate it. For each item give: text (exact), where (which part and which face of the object), colour "
+           "(of the letters and of what is behind them), style (serif, sans, script, bold, engraved, embossed, printed ...), and "
+           "size (letter height relative to that part, for example 'about one tenth of the label height'). Leave out text that is "
+           "not on the object. Return an empty list when there is none.")
+
+
+def tr_schema() -> dict:
+    item = {"type": "object", "additionalProperties": False, "required": ["text", "where", "colour", "style", "size"],
+            "properties": {k: {"type": "string"} for k in ("text", "where", "colour", "style", "size")}}
+    return {"format": {"type": "json_schema", "name": "visible_text", "strict": True, "schema": {
+        "type": "object", "additionalProperties": False, "required": ["texts"],
+        "properties": {"texts": {"type": "array", "items": item}}}}}

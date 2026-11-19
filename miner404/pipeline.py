@@ -81,6 +81,7 @@ POST_PICK_STEPS = 3  # rewrites of the final pick (steps 7-9: rewrite 700/800/90
 POST_PICK_REWRITE = (SOL, "xhigh")  # the rewrite of the plan's last step
 METAL_PASS = 'const __m404 = new Set(); root.traverse((o) => { const list = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []; for (const m of list) { if (__m404.has(m)) continue; __m404.add(m); if (m.metalness !== undefined && m.metalness >= 0.25) { m.metalness = 1.0; m.roughness = Math.max(0.25, m.roughness === undefined ? 0.25 : m.roughness); } } });'  # shiny metal at 1.0 metalness; roughness at least 0.25, the model's own when higher
 BRIEF_ID = 9990
+TEXT_READ_ID = 9985  # the text read-out before the drafts
 BRIEF_MAX_OUTPUT = 4096
 MEASURED_ASTRA_MAX_OUTPUT = 18000  # a lower cap reserves less, so late rewrites are not refused
 MATCH_WEIGHT = 0.5  # penalty points per unit of match score
@@ -884,6 +885,28 @@ class Pipeline:
             gaps.append(one - two if parent_first else two - one)
         return bool(gaps) and sum(gaps) / len(gaps) >= -JUDGE_DRAW
 
+    def read_text(self, pool: ThreadPoolExecutor) -> str:
+        """Text read-out: one Sol call that transcribes the photo's visible text; the block appended to the module-writing system text,
+        or "" when there is none or the reply cannot be read."""
+        call = Call(TEXT_READ_ID, SOL, prompts.TR_SYSTEM, [{"type": "input_text", "text": prompts.TR_USER}, self.target, *self.closeup],
+                    "high", 16384, text=prompts.tr_schema())  # 2048 left no room after reasoning on text-heavy photos
+        try:
+            reply = self.run_stage(pool, [call])[0]
+            items = json.loads(reply.output_text)["texts"] if reply is not None else []
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return ""
+        lines = []
+        for item in items[:12]:
+            text = str(item.get("text", "")).strip()
+            if text and "illegible" not in text.lower() and not (text.startswith("[") and text.endswith("]")):
+                lines.append(f'- "{text}" on {item.get("where", "")}; colour: {item.get("colour", "")}; style: '
+                             f'{item.get("style", "")}; size: {item.get("size", "")}')
+        if not lines:
+            return ""
+        return ("\n\nVISIBLE TEXT IN THE PHOTO (read once from the photo, letter by letter): reproduce every item below exactly as "
+                "written here, letter by letter (keep unusual spellings), in the same place, colour, style and size, and keep all "
+                "of it in every version of the module; never drop text that another version had.\n" + "\n".join(lines))
+
     def feedback(self, step: Step, parent: Candidate) -> str:
         """Extra text for a rewrite: the selector's fixes for the parent and the earlier rounds, when the step asks for them."""
         extra = ""
@@ -996,8 +1019,8 @@ class Pipeline:
             {"type": "input_text", "text": (prompts.REWRITE_PATCH if patch_edit else prompts.REWRITE).format(
                 source=parent.raw, focus=prompts.REWRITE_FOCUS[focus] + extra)},
         ])
-        if patch_edit and self.instructions == prompts.GENERATE_CHAIN:
-            call.instructions = prompts.GENERATE_CHAIN_PATCH
+        if patch_edit and self.instructions.startswith(prompts.GENERATE_CHAIN):  # the text block stays in patch rounds
+            call.instructions = prompts.GENERATE_CHAIN_PATCH + self.instructions[len(prompts.GENERATE_CHAIN):]
         return call
 
     # ----- rendering -----
@@ -1287,6 +1310,9 @@ class Pipeline:
         if closeup is not None:
             self.closeup = [{"type": "input_image", "image_url": data_url(closeup), "detail": "high"}]
         with ThreadPoolExecutor(max_workers=8, thread_name_prefix="miner404") as pool:
+            block = self.read_text(pool)  # every module-writing call gets the photo's text, letter by letter
+            if block:
+                self.instructions = self.instructions + block
             if plan.measured:
                 self.instructions = prompts.GENERATE_MEASURED
                 self.astra_cap = MEASURED_ASTRA_MAX_OUTPUT
