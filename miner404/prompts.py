@@ -477,12 +477,9 @@ def review_schema() -> dict:
 
 # Memory from real code changes (R3 fixed): each earlier round's changed lines and the judge's decision.
 CHANGES_BLOCK = ("\n\nEarlier rewrites of this object, oldest first: the code lines each one changed (- old, + new) and the "
-                 "judge's decision. Keep what the kept rewrites achieved, and do not bring back a change that was rejected:\n{changes}")
+                 "judge's decision. The parts these rewrites changed have been worked on already: do not spend this step on them again, and do not bring back a change that was rejected. Look at the photo for the largest remaining difference in a part no earlier rewrite changed, and fix that:\n{changes}")
 
 
-# Patch edits (format text from kaito0311/3d-gen-sub PATCH_ASK, MIT): the same
-# rewrite, answered as SEARCH/REPLACE edits to the parent; the system line changes too, since "Return only the JavaScript
-# module" otherwise wins.
 REWRITE_PATCH = REWRITE.replace('''Reply format for this step only: first the differences you found, most damaging first (at most 12 short bullets, no
 code), then exactly one ```javascript fenced code block with the complete improved module, not a patch.''', '''Reply format for this step only: first the differences you found, most damaging first (at most 12 short bullets, no
 code), then edits to the current module, not a new module, as one or more blocks:
