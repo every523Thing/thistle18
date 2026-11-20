@@ -7,14 +7,11 @@ from __future__ import annotations
 
 import io
 import math
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
-from witness_client import RenderOptions, RenderRejected
 
-from .orient import FRONT_PHIS, FRONT_THETAS, Renderer
 
 VIEWS = ("30 degrees left", "30 degrees right", "from below", "from above")
 TILE = 512  # the size the weights were fitted at
@@ -23,10 +20,6 @@ OVERLAY_SIDE = 256
 WEIGHTS = {"ncc": 2.322, "pix_err": -0.0567, "aspect_err": -3.1964, "hist_sim": 2.3108, "contrast": 0.084, "fill": 9.7765}
 LUMA = np.array([299, 587, 114], dtype=np.int64)  # thousandths
 BINS = 6
-# Small renders of the judge's front views, for the colour-grade search.
-SEARCH_RENDER = RenderOptions(thetas=FRONT_THETAS, phis=FRONT_PHIS, img_size=256, gap=0, bg_color="ffffff",
-                              lighting="neutral")
-GRADE_MARGIN = 0.05
 
 
 @dataclass(frozen=True)
@@ -145,32 +138,3 @@ def feedback(grid: bytes, photo: Appearance) -> tuple[str, bytes]:
     overlay.save(buffer, "PNG")
     return "\n".join(lines), buffer.getvalue()
 
-
-GRADE_GAMMAS = (0.85, 1.15, 1.3, 1.5)  # above 1 deepens tones and raises contrast; the photo decides how far
-GRADE_SATURATIONS = (1.15, 1.3)
-
-
-def search_grade(source: str, photo: Appearance, renderer: Renderer, call: str) -> tuple[tuple[float, float], float, float]:
-    """The tone curve (gamma, saturation) that best matches the photo, one value at a time. `call` is the wrapper's
-    inert grading call. Returns the values, their score and the score as built."""
-
-    def graded(gamma: float, saturation: float) -> str:
-        return source.replace(call, f"__grade404(THREE, root, {gamma}, {saturation});", 1)
-
-    def scored(gamma: float, saturation: float) -> float:
-        try:
-            return grid_score(renderer.render(graded(gamma, saturation), SEARCH_RENDER), photo)
-        except RenderRejected:
-            return float("-inf")
-
-    start = best = scored(1, 1)
-    gamma, saturation = 1.0, 1.0
-    for value in GRADE_GAMMAS:
-        score = scored(value, 1)
-        if score > best + GRADE_MARGIN:
-            best, gamma = score, value
-    for value in GRADE_SATURATIONS:
-        score = scored(gamma, value)
-        if score > best + GRADE_MARGIN:
-            best, saturation = score, value
-    return (gamma, saturation), best, start

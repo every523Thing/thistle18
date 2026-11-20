@@ -19,7 +19,6 @@ random choices are seeded from the round seed and the image hash.
 
 from __future__ import annotations
 
-import colorsys
 import difflib
 import hashlib
 import io
@@ -41,7 +40,6 @@ from openai.types.responses.response_create_params import ResponseCreateParamsBa
 from witness_client import ExchangePending, RenderOptions, RenderRejected, RenderUnavailable, WitnessError
 
 from . import match, patch, prompts
-from .silver_guide import silver_guide
 from .texfix import texfix
 from .powfix import fix_unary_pow
 from .budget import CALL_LIMIT, CREDIT_LIMIT, PRICING, SAFETY, Budget, worst_case
@@ -263,25 +261,9 @@ export default function generate(THREE) {
 }
 """
 _PRE_FIT = """  // uniform fit, centred
-"""  # a marker line: the outline and glow steps are placed before the fit here
+"""  # a marker line: the outline step is placed before the fit here
 _FIT = "  const box = new THREE.Box3().setFromObject(root);\n"
 
-
-_GLOW_FUNCTION = """
-function __lift404(root, amount) {
-  const seen = new Set();
-  root.traverse(function (node) {
-    for (const material of (node.material ? [].concat(node.material) : [])) {
-      if (seen.has(material) || !material.isMeshStandardMaterial || material.vertexColors) continue;
-      seen.add(material);
-      material.emissive.multiplyScalar(material.emissiveIntensity).add(material.color.clone().multiplyScalar(amount));
-      material.emissiveIntensity = 1;
-      if (material.map && !material.emissiveMap) material.emissiveMap = material.map;
-      material.color.multiplyScalar(1 - 1.6 * amount);
-    }
-  });
-}
-"""
 _EXPORT_LINE = "export default function generate(THREE) {\n"
 # The validator's box is not per-vertex: it wraps each part's own box after rotating it, so a rotated part inflates the box
 # and the fit then shrinks the whole object (an apple turned 40 degrees renders at half the area). Moving every transform
@@ -347,103 +329,24 @@ function __bake404(THREE, root) {
   root.updateMatrixWorld(true);
 }
 """
-# Tone grading: every color, color texture and vertex color goes through one curve, the same in linear and sRGB values
-# because a power curve survives the conversion. match.search_grade picks the values against the photo, with free renders.
-_GRADE_FUNCTION = """
-function __grade404(THREE, root, gamma, saturation) {
-  if (gamma === 1 && saturation === 1) return;
-  const curve = function (r, g, b) {
-    const R = Math.pow(Math.max(r, 0), gamma);
-    const G = Math.pow(Math.max(g, 0), gamma);
-    const B = Math.pow(Math.max(b, 0), gamma);
-    const luma = 0.2126 * R + 0.7152 * G + 0.0722 * B;
-    return [luma + (R - luma) * saturation, luma + (G - luma) * saturation, luma + (B - luma) * saturation].map(function (v) {
-      return Math.min(1, Math.max(0, v));
-    });
-  };
-  const done = new Set();
-  const gradeAttribute = function (attribute) {
-    if (!attribute || done.has(attribute)) return;
-    done.add(attribute);
-    for (let i = 0; i < attribute.count; i++) {
-      const c = curve(attribute.getX(i), attribute.getY(i), attribute.getZ(i));
-      attribute.setXYZ(i, c[0], c[1], c[2]);
-    }
-    attribute.needsUpdate = true;
-  };
-  const gradeTexture = function (texture) {
-    if (!texture || !texture.isDataTexture || done.has(texture) || !texture.image || !(texture.image.data instanceof Uint8Array)) return;
-    done.add(texture);
-    const data = texture.image.data;
-    const channels = Math.round(data.length / (texture.image.width * texture.image.height));
-    if (channels < 3) return;
-    for (let i = 0; i + 2 < data.length; i += channels) {
-      const c = curve(data[i] / 255, data[i + 1] / 255, data[i + 2] / 255);
-      data[i] = Math.round(c[0] * 255);
-      data[i + 1] = Math.round(c[1] * 255);
-      data[i + 2] = Math.round(c[2] * 255);
-    }
-    texture.needsUpdate = true;
-  };
-  root.traverse(function (node) {
-    for (const material of (node.material ? [].concat(node.material) : [])) {
-      if (!done.has(material)) {
-        done.add(material);
-        if (material.color) {
-          const c = curve(material.color.r, material.color.g, material.color.b);
-          material.color.setRGB(c[0], c[1], c[2]);
-        }
-        gradeTexture(material.map);
-      }
-      if (material.vertexColors && node.geometry) gradeAttribute(node.geometry.attributes.color);
-    }
-    if (node.isInstancedMesh && node.instanceColor) gradeAttribute(node.instanceColor);
-  });
-}
-"""
-GRADE_CALL = "__grade404(THREE, root, 1, 1);"
-_OUTLINE_PRE_FIT = """  __grade404(THREE, root, 1, 1);
-  __bake404(THREE, root);
+_OUTLINE_PRE_FIT = """  __bake404(THREE, root);
 """
 
 
-def chain_wrapper(fill: float, glow: float = 0.0, outline_fit: bool = False) -> str:
-    """The fit wrapper. `glow` makes part of each color independent of the light, so it survives the grid's dim
-    light, and darkens the base color to keep the bright views about the same. `outline_fit` fits the object's real outline."""
+def chain_wrapper(fill: float, outline_fit: bool = False) -> str:
+    """The fit wrapper. `outline_fit` fits the object's real outline."""
     wrapper = WRAPPER.replace(_FIT, _PRE_FIT + _FIT, 1).replace("0.95 / extent", f"{fill} / extent", 1)
     if outline_fit:
-        wrapper = wrapper.replace(_PRE_FIT, _OUTLINE_PRE_FIT, 1).replace(_EXPORT_LINE, _OUTLINE_FUNCTION + _GRADE_FUNCTION + "\n" + _EXPORT_LINE, 1)
-    if glow:
-        wrapper = wrapper.replace(_PRE_FIT, f"  __lift404(root, {glow});\n" + _PRE_FIT, 1)
-        wrapper = wrapper.replace(_EXPORT_LINE, _GLOW_FUNCTION + "\n" + _EXPORT_LINE, 1)
+        wrapper = wrapper.replace(_PRE_FIT, _OUTLINE_PRE_FIT, 1).replace(_EXPORT_LINE, _OUTLINE_FUNCTION + "\n" + _EXPORT_LINE, 1)
     return wrapper
 
 
 _EXPORT = re.compile(r"export\s+default\s+function\s*(?:[A-Za-z_$][\w$]*\s*)?\(")
 
 
-SILVER_AFTER = "m.metalness = 1.0; m.roughness = Math.max(0.25, m.roughness === undefined ? 0.25 : m.roughness);"  # the metal pass line the silver guide keys its roughness test on
-SATURATION = 1.15  # colour literals on colour lines: HSV saturation times this (1.0 = off)
 
 
-_HEX = re.compile(r"(0x|#)([0-9a-fA-F]{6})\b")
-_COLOUR_LINE = re.compile(r"colou?r|fillStyle|strokeStyle|addColorStop", re.I)
-_NOT_SURFACE = re.compile(r"emissive|background|clearColor|fog", re.I)
 
-
-def saturated(source: str | None, factor: float = SATURATION) -> str | None:
-    """The module with the HSV saturation of every 6-digit colour literal on a colour line multiplied by `factor` (capped
-    at 1); emissive, background, clear and fog lines are left alone. Deterministic text edit, no model calls."""
-    if not source or factor == 1.0:
-        return source
-
-    def one(m: re.Match[str]) -> str:
-        h, s, v = colorsys.rgb_to_hsv(*[int(m.group(2)[i:i + 2], 16) / 255 for i in (0, 2, 4)])
-        out = "".join(f"{round(x * 255):02x}" for x in colorsys.hsv_to_rgb(h, min(1.0, s * factor), v))
-        return m.group(1) + (out.upper() if m.group(2).isupper() else out)
-
-    return "\n".join(_HEX.sub(one, line) if _COLOUR_LINE.search(line) and not _NOT_SURFACE.search(line) else line
-                     for line in source.split("\n"))
 
 
 class ModelCalls(Protocol):
@@ -606,7 +509,6 @@ class StagePlan:
     draft_keep: int = 0  # survivors of the draft selection; 0 = every valid draft goes on
     draft_each_start: bool = False  # the survivors come from different starts while there are any
     fill: float = 0.99
-    glow: float = 0.0  # see chain_wrapper
     # The photo brief and pixel measurements in rewrites and selection (see match.py).
     measured: bool = False
     # Fit the object's real outline, so rotated parts do not shrink it.
@@ -618,7 +520,6 @@ class StagePlan:
     astra_last: bool = False  # the planner lowers Sol xhigh rounds to Sol high first and touches Astra rounds only after them
     replan: bool = False  # the planner runs before every round from round 2 (see fit_rest): merges, some xhigh, then Astra give way
     merge_pick: bool = False  # after the draft pick: a critique of every draft, then one module merged from the best base and two others
-    tone: bool = False  # the finished module gets slightly more contrast and colour
     outline_fit_last: bool = False
     post_pick_effort: str = "xhigh"  # effort of the rewrites of the final pick
     post_pick_steps: int = POST_PICK_STEPS  # rewrites of the final pick; 0 ends the chain at the pick
@@ -1303,7 +1204,7 @@ class Pipeline:
             return incumbent.source
 
     def run_stages(self, plan: StagePlan) -> str:
-        self.wrapper = chain_wrapper(plan.fill, plan.glow, plan.outline_fit or plan.measured)
+        self.wrapper = chain_wrapper(plan.fill, plan.outline_fit or plan.measured)
         self.keep_shots = any(step.judge_pick for step in plan.steps)
         self.end_reserve = 0.0
         closeup = object_closeup(self.image)
@@ -1358,9 +1259,7 @@ class Pipeline:
                 winner = self.checked(pool, winner)
                 self.best_so_far = winner.source
             source = self.stronger_metal(self.fitted_last(winner, plan) if plan.outline_fit_last else winner.source)
-            if plan.tone:
-                source = self.toned(source)
-            return self.texfixed(self.silvered(saturated(source)))
+            return self.texfixed(source)
 
     def texfixed(self, source: str | None) -> str | None:
         """The finished module with smooth sampling on unfiltered data textures (texfix.py); as it is when nothing changes
@@ -1375,31 +1274,6 @@ class Pipeline:
         except RenderRejected:
             return source
         return candidate
-
-    def silvered(self, source: str | None) -> str | None:
-        """The finished module with reflection bands on plain polished silver; as it is when nothing qualifies or the
-        renderer refuses the painted module (one render of the judge's front views, no model calls)."""
-        if not source or source.count(SILVER_AFTER) != 1:  # only where the final metal pass ran (as tested)
-            return source
-        candidate = silver_guide(source)
-        if candidate == source:
-            return source
-        try:
-            self.renderer.render(candidate, FRONT_JUDGE)
-        except RenderRejected:
-            return source
-        return candidate
-
-    def toned(self, source: str) -> str:
-        """Slightly more contrast and colour on the finished module; as it is when the renderer refuses."""
-        turned = tone(source)
-        if turned == source:
-            return source
-        try:
-            self.renderer.render(turned, FRONT_JUDGE)
-        except RenderRejected:
-            return source
-        return turned
 
     def stronger_metal(self, source: str) -> str:
         """Metal the photo shows as shiny reads as plastic at the capped values. As it is when no part is metal or the renderer refuses."""
@@ -1421,7 +1295,7 @@ class Pipeline:
         """The finished module with the outline fit, or as it is if the fit is rejected."""
         if not winner.raw:
             return winner.source
-        source = normalize(winner.raw, chain_wrapper(plan.fill, plan.glow, True))
+        source = normalize(winner.raw, chain_wrapper(plan.fill, True))
         try:
             front = self.renderer.render(source, FRONT_JUDGE)
         except RenderRejected:
@@ -1565,7 +1439,6 @@ class Pipeline:
         return min(enumerate(candidates), key=key)[1]
 
 
-BASIC_PLAN = Plan(drafts=((SOL, "high", "base"),) * 9, draft_max_output=32768)
 
 
 def run(image: bytes, seed: int, calls: ModelCalls, renderer: Renderer, plan: Plan | StagePlan) -> str | None:
@@ -1601,59 +1474,6 @@ PATCH_FLOOR = 0.4  # the least a patch-edit reply is taken to cost, as a share o
 PATCH_PRIOR = 0.6  # that share before any patch-edit reply of this prompt has been seen
 MERGE_COST = (748, 11000)  # a round's merge call: reasoning tokens, and input tokens besides the two modules
 SELECT_EXTRA_CREDITS = 12000  # a third candidate in the round's two selection calls
-# Display-space tone on material colours, base-colour textures, vertex and instance colours, before the final fit.
-TONE_CALL = '__col404(THREE, root, {"cont":1.1,"vib":0.1,"bri":-0.015});'
-TONE_FUNCTION = r"""
-function __col404(THREE, root, c) {
-  const clamp = function (v) { return Math.min(1, Math.max(0, v)); };
-  const toS = function (v) { v = Math.max(v, 0); return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055; };
-  const toL = function (v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-  const smooth = function (a, b, x) { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
-  const rad = (c.hue || 0) * Math.PI / 180, cs = Math.cos(rad), sn = Math.sin(rad), k = (1 - cs) / 3, q = sn / Math.sqrt(3);
-  const luma = function (r, g, b) { return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
-  const adj = function (R, G, B) {
-    let r = R, g = G, b = B;
-    if (c.exp) { r = toS(toL(r) * c.exp); g = toS(toL(g) * c.exp); b = toS(toL(b) * c.exp); }
-    if (c.temp) { r += c.temp; b -= c.temp; }
-    if (c.tint) g += c.tint;
-    if (c.bal) { const w = c.bal * (1 - 2 * clamp(luma(r, g, b))); r += w; b -= w; }
-    if (c.bri) { r += c.bri; g += c.bri; b += c.bri; }
-    if (c.hi || c.sh) { const L = luma(r, g, b), d = (c.hi || 0) * smooth(0.5, 1, L) + (c.sh || 0) * (1 - smooth(0, 0.5, L)); r += d; g += d; b += d; }
-    if (c.cont) { r = 0.5 + (r - 0.5) * c.cont; g = 0.5 + (g - 0.5) * c.cont; b = 0.5 + (b - 0.5) * c.cont; }
-    if (c.vib) { const L = luma(r, g, b), a = 1 + c.vib * (1 - clamp(Math.max(r, g, b) - Math.min(r, g, b))); r = L + (r - L) * a; g = L + (g - L) * a; b = L + (b - L) * a; }
-    if (c.hue) { const x = r, y = g, z = b; r = x * (cs + k) + y * (k - q) + z * (k + q); g = x * (k + q) + y * (cs + k) + z * (k - q); b = x * (k - q) + y * (k + q) + z * (cs + k); }
-    return [clamp(r), clamp(g), clamp(b)];
-  };
-  const lin = function (R, G, B) { const o = adj(toS(R), toS(G), toS(B)); return [toL(o[0]), toL(o[1]), toL(o[2])]; };
-  const done = new Set();
-  const attr = function (a) {
-    if (!a || done.has(a)) return;
-    done.add(a);
-    for (let i = 0; i < a.count; i++) { const o = lin(a.getX(i), a.getY(i), a.getZ(i)); a.setXYZ(i, o[0], o[1], o[2]); }
-    a.needsUpdate = true;
-  };
-  const tex = function (t) {
-    if (!t || !t.isDataTexture || done.has(t) || !t.image || !(t.image.data instanceof Uint8Array)) return;
-    done.add(t);
-    const d = t.image.data, n = Math.round(d.length / (t.image.width * t.image.height));
-    if (n < 3) return;
-    const f = t.colorSpace === THREE.SRGBColorSpace ? adj : lin;
-    for (let i = 0; i + 2 < d.length; i += n) { const o = f(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255); d[i] = Math.round(o[0] * 255); d[i + 1] = Math.round(o[1] * 255); d[i + 2] = Math.round(o[2] * 255); }
-    t.needsUpdate = true;
-  };
-  root.traverse(function (node) {
-    for (const m of (node.material ? [].concat(node.material) : [])) {
-      if (!done.has(m)) {
-        done.add(m);
-        if (m.color) { const o = lin(m.color.r, m.color.g, m.color.b); m.color.setRGB(o[0], o[1], o[2]); }
-        tex(m.map);
-      }
-      if (m.vertexColors && node.geometry) attr(node.geometry.attributes.color);
-    }
-    if (node.isInstancedMesh && node.instanceColor) attr(node.instanceColor);
-  });
-}
-"""
 
 
 def judge_shots(front: bytes) -> list[bytes]:
@@ -1667,13 +1487,6 @@ def judge_shots(front: bytes) -> list[bytes]:
         shots.append(buffer.getvalue())
     return shots
 
-
-def tone(source: str) -> str:
-    at = source.rfind(_FIT)
-    if at < 0 or _EXPORT_LINE not in source:
-        return source
-    source = source[:at] + "  " + TONE_CALL + "\n" + source[at:]
-    return source.replace(_EXPORT_LINE, TONE_FUNCTION + "\n" + _EXPORT_LINE, 1)
 
 
 def _visible_tokens(reply: object) -> int:
