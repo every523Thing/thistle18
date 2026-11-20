@@ -75,8 +75,9 @@ its natural orientation, as it stands or rests on a level surface, with the side
   shows it lying down, so the cameras see that face. Build it standing exactly upright in that position, with no
   extra tilt.
 - A vehicle, boat, train, shoe or animal points its front toward +Z.
-- A long object with no forward direction (knife, pen, ruler, toothpick, spoon, rolling pin, bar, tool) rests in its
-  natural pose with its long axis along X.
+- A long object with no forward direction (pen, toothpick, spoon, rolling pin, bar, tool) rests in its natural pose
+  with its long axis along X. If it is also flat (knife, ruler, spatula, saw), it stands on its edge with its long
+  axis along X and its flat face toward +Z.
 - Jewelry and other objects with no fixed resting shape (necklace, pendant, chain, bracelet, watch, cable, ribbon) are
   built as worn or hung, front toward +Z: a necklace or pendant hangs with the pendant at the bottom and the chain
   rising from it in the drape the photo shows; a ring or watch stands upright with its stone or face toward +Z.
@@ -105,9 +106,8 @@ _GUIDANCE_CHAIN = """## How to build it
 - Openings (cups, bowls, pots, tubes) need real wall thickness: a lathe profile that walks up the outside, across the
   rim and back down the inside, or Shape holes for extrusions. A dark patch is not a hole.
 - Thin parts (wires, rods, frames, straps) need a visible thickness of at least about 1% of the object's size.
-- Wheels turn with their axle: on a vehicle shown from the side (axles along Z), tori keep their default orientation
-  and cylinders need rotation.x = Math.PI / 2; on a vehicle facing +Z (axles along X), tori need
-  rotation.y = Math.PI / 2 and cylinders rotation.z = Math.PI / 2.
+- Wheels turn with their axle: the vehicle faces +Z, so its axles run along X; wheel tori need rotation.y = Math.PI / 2
+  and wheel cylinders rotation.z = Math.PI / 2.
 - Slow scenes time out. Stay under about 60,000 vertices, 120 draw calls and 5,000 instances; share geometries and
   materials, use InstancedMesh for repeats, and keep each DataTexture at most 512x512. Geometry with a map needs UVs.
 - Never put a unary minus or plus directly before ** (-x ** 2 is a syntax error); write -(x ** 2).
